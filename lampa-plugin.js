@@ -1,39 +1,73 @@
-// == Dorama Plugin for Lampa — топ-100 дорам с doramclub.ru ==
+// == Dorama Plugin for Lampa — кастомная сетка топов дорам ==
 (function () {
   'use strict';
 
-  var BASE_URL = '__BASE_URL__' || '';
+  var BASE_URL = '__BASE_URL__';
+  if (BASE_URL.indexOf('__BASE' + '_URL__') >= 0) BASE_URL = '';
+
   var SOURCE_NAME = 'DoramClub';
   var ICON = '<svg viewBox="0 0 24 24" width="24" height="24" fill="#ff9800"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>';
 
   function log(m) { try { console.log('[Dorama] ' + m); } catch (e) {} }
 
-  // ====== Api.sources — для списка категорий ======
+  function escapeHtml(value) {
+    return String(value || '').replace(/[&<>"']/g, function (s) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[s];
+    });
+  }
+
+  function hashCode(value) {
+    var str = String(value || 'dorama');
+    var hash = 0;
+    for (var i = 0; i < str.length; i++) hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    return Math.abs(hash) || 1;
+  }
+
+  function posterOf(item) {
+    return item.poster_path || item.poster || item.img || item.background_image || '';
+  }
+
+  function normalizeItem(item) {
+    if (!item) item = {};
+    var poster = posterOf(item);
+    if (poster && poster.indexOf('/api/') === 0) poster = BASE_URL + poster;
+    else if (poster && poster.charAt(0) === '/') poster = 'https://doramclub.ru' + poster;
+    var id = item.id || hashCode(item.url || item.title || item.name || '');
+
+    return {
+      id: id,
+      title: item.title || item.name || '',
+      name: item.title || item.name || '',
+      original_title: item.original_title || item.original_name || '',
+      original_name: item.original_title || item.original_name || '',
+      poster_path: '',
+      img: poster,
+      poster: poster,
+      backdrop_path: poster,
+      overview: item.overview || item.description || '',
+      vote_average: item.vote_average || 0,
+      type: 'tv',
+      media_type: 'tv',
+      first_air_date: item.first_air_date || (item.year ? item.year + '-01-01' : ''),
+      release_date: item.first_air_date || (item.year ? item.year + '-01-01' : ''),
+      number_of_seasons: 1,
+      number_of_episodes: item.number_of_episodes || 0,
+      year: item.year || '',
+      url: item.url || '',
+      status: item.status || '',
+      catalog_source: item.source || '',
+      source: SOURCE_NAME,
+      genres: [],
+      seasons: []
+    };
+  }
+
+  // Api.sources оставляем для совместимости со стандартными компонентами Lampa.
   function DoramclubApiService() {
     var self = this;
     self.network = new Lampa.Reguest();
     self.get = function (u, cb, eb) { self.network.silent(u, cb, eb); };
-
-    self.normalizeItem = function (item) {
-      if (!item) item = {};
-      var poster = item.poster_path || item.poster || item.img || '';
-      if (poster && poster.charAt(0) === '/') poster = 'https://doramclub.ru' + poster;
-      var id = item.id || 0;
-      if (!id) { try { id = Lampa.Utils.hash(item.url || item.title || ''); } catch (e) { id = 1; } }
-      return {
-        id: id || 1, title: item.title || '', name: item.title || '',
-        original_title: item.original_title || item.original_name || '',
-        original_name: item.original_title || item.original_name || '',
-        poster_path: '', img: poster, poster: poster, backdrop_path: poster,
-        overview: item.overview || item.description || '',
-        vote_average: item.vote_average || 0, type: 'tv', media_type: 'tv',
-        first_air_date: item.first_air_date || (item.year ? item.year + '-01-01' : ''),
-        release_date: item.first_air_date || (item.year ? item.year + '-01-01' : ''),
-        number_of_seasons: 1, number_of_episodes: item.number_of_episodes || 0,
-        year: item.year || '', url: item.url || '', source: SOURCE_NAME,
-        genres: [], seasons: []
-      };
-    };
+    self.normalizeItem = normalizeItem;
 
     self.list = function (p, cb, eb) {
       self.get(BASE_URL + '/api/doramclub/top', function (j) {
@@ -41,17 +75,169 @@
         cb({ results: r, page: 1, total_pages: 1, total_results: r.length });
       }, eb);
     };
+
     self.category = function (p, s, e) {
       self.list(p, function (j) {
         s([{ url: '', title: 'Топ-100 дорам', page: 1, total_results: j.total_results, total_pages: 1, more: false, results: j.results, source: SOURCE_NAME }]);
       }, e);
       return function (a, b) { b([]); };
     };
+
     self.full = function (p, s) { s(self.normalizeItem(p.card)); };
     self.main = function (p, c) { if (typeof c === 'function') c([]); };
   }
 
-  // ====== Компонент: страница дорамы (с TMDB поиском) ======
+  // ====== Компонент: кастомная сетка топов ======
+  Lampa.Component.add('dorama_grid', function () {
+    var self = this;
+    this.html = $('<div class="dorama-grid-root"></div>');
+    this.cards = [];
+    this.keydown = function (event) {
+      var code = event.keyCode || event.which;
+      var key = event.key || '';
+      if (key !== 'Enter' && key !== 'OK' && code !== 13 && code !== 23 && code !== 66) return;
+      if (!self.html || !self.html.is(':visible') || !self.html.find('.dg-card').length) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      self.openFocusedCard();
+    };
+
+    this.create = function () {
+      self.renderLoading('Загружаю топы дорам...');
+
+      var network = new Lampa.Reguest();
+      network.silent(BASE_URL + '/api/dorama/sections', function (json) {
+        self.renderSections(json && json.sections ? json.sections : []);
+      }, function () {
+        self.renderError('Не удалось загрузить топы. Проверьте сервер или интернет.');
+      });
+    };
+
+    this.renderLoading = function (text) {
+      self.html.html('<div class="dg-state"><div class="dg-spinner"></div><div>' + escapeHtml(text) + '</div></div>');
+    };
+
+    this.renderError = function (text) {
+      self.html.html('<div class="dg-state dg-error"><div class="dg-error-title">Ошибка</div><div>' + escapeHtml(text) + '</div></div>');
+    };
+
+    this.renderSections = function (sections) {
+      self.cards = [];
+
+      var visibleSections = (sections || []).filter(function (section) {
+        return section && section.items && section.items.length;
+      });
+
+      if (!visibleSections.length) {
+        self.renderError('Сайты не отдали ни одной дорамы.');
+        return;
+      }
+
+      var total = 0;
+      visibleSections.forEach(function (section) { total += section.items.length; });
+
+      var html = '';
+      html += '<div class="dg-page">';
+      html += '<div class="dg-hero">';
+      html += '<div class="dg-kicker">Для удобного просмотра на ТВ</div>';
+      html += '<div class="dg-title">Топы дорам</div>';
+      html += '<div class="dg-subtitle">DoramClub, DoramyClub.pro и популярное с Dorama.land в одной кастомной сетке.</div>';
+      html += '<div class="dg-badges"><span>' + total + ' карточек</span><span>TMDB + поиск Lampa</span></div>';
+      html += '</div>';
+
+      visibleSections.forEach(function (section) {
+        html += '<section class="dg-section">';
+        html += '<div class="dg-section-head"><div class="dg-section-title">' + escapeHtml(section.title || 'Дорамы') + '</div><div class="dg-count">' + section.items.length + '</div></div>';
+        html += '<div class="dg-grid">';
+
+        section.items.forEach(function (raw, index) {
+          var card = normalizeItem(raw);
+          var globalIndex = self.cards.length;
+          self.cards.push(card);
+
+          var poster = posterOf(card);
+          var title = card.title || card.name || 'Без названия';
+          var meta = [];
+          if (card.year) meta.push(card.year);
+          if (card.status) meta.push(card.status);
+          if (card.number_of_episodes) meta.push(card.number_of_episodes + ' сер.');
+          if (card.overview && meta.length < 2) meta.push(card.overview);
+
+          html += '<div class="dg-card selector" data-index="' + globalIndex + '">';
+          html += '<div class="dg-rank">' + (index + 1) + '</div>';
+          if (poster) html += '<img class="dg-poster" src="' + escapeHtml(poster) + '" loading="lazy" alt="' + escapeHtml(title) + '">';
+          else html += '<div class="dg-poster dg-poster-empty"><span>Нет постера</span></div>';
+          html += '<div class="dg-card-title">' + escapeHtml(title) + '</div>';
+          html += '<div class="dg-card-meta">' + escapeHtml(meta.join(' • ')) + '</div>';
+          html += '</div>';
+        });
+
+        html += '</div>';
+        html += '</section>';
+      });
+
+      html += '</div>';
+      self.html.html(html);
+
+      self.html.off('hover:enter click', '.dg-card').on('hover:enter click', '.dg-card', function () {
+        self.openCardElement(this);
+      });
+
+      try {
+        Lampa.Controller.collectionSet(self.html[0]);
+        Lampa.Controller.collectionFocus(false, self.html[0]);
+      } catch (e) {}
+    };
+
+    this.render = function (js) { return js ? this.html : $(this.html); };
+
+    this.openCardElement = function (element) {
+      var $card = $(element).closest('.dg-card');
+      if (!$card.length) return;
+
+      var index = parseInt($card.attr('data-index'), 10);
+      var card = self.cards[index];
+      if (!card) return;
+
+      try { window.__dorama_card = card; } catch (e) {}
+      Lampa.Activity.push({
+        component: 'dorama_detail',
+        title: card.title || SOURCE_NAME,
+        source: SOURCE_NAME,
+        card: card,
+        params: { card: card }
+      });
+    };
+
+    this.openFocusedCard = function () {
+      var focused = self.html.find('.dg-card.focus').eq(0);
+      if (!focused.length) focused = self.html.find('.dg-card.selector').eq(0);
+      if (focused.length) self.openCardElement(focused[0]);
+    };
+
+    this.start = function () {
+      Lampa.Controller.add('content', {
+        toggle: function () { Lampa.Controller.collectionSet(self.html[0]); Lampa.Controller.collectionFocus(false, self.html[0]); },
+        left: function () { if (Navigator.canmove('left')) Navigator.move('left'); else Lampa.Controller.toggle('menu'); },
+        up: function () { if (Navigator.canmove('up')) Navigator.move('up'); else Lampa.Controller.toggle('head'); },
+        down: function () { Navigator.move('down'); },
+        right: function () { Navigator.move('right'); },
+        enter: function () { self.openFocusedCard(); },
+        back: function () { Lampa.Activity.backward(); }
+      });
+      try { window.removeEventListener('keydown', self.keydown, true); } catch (e) {}
+      try { window.addEventListener('keydown', self.keydown, true); } catch (e) {}
+      Lampa.Controller.toggle('content');
+    };
+
+    this.destroy = function () {
+      try { window.removeEventListener('keydown', self.keydown, true); } catch (e) {}
+      this.html.remove();
+    };
+  });
+
+  // ====== Компонент: страница дорамы (TMDB поиск + fallback) ======
   Lampa.Component.add('dorama_detail', function () {
     this.html = $('<div class="dorama-detail-root"></div>');
     var self = this;
@@ -62,37 +248,42 @@
         (this.activity && this.activity.params && this.activity.params.card) ||
         (typeof window.__dorama_card !== 'undefined' ? window.__dorama_card : {}) || {};
       try { window.__dorama_card = null; } catch (e) {}
-      var title = card.original_title || card.title || '';
+
+      var title = card.title || card.name || '';
+      var originalTitle = card.original_title || card.original_name || '';
+      var fallbackTitle = title || originalTitle;
       var url = card.url || '';
 
-      self.html.html('<div style="padding:60px;text-align:center;color:#aaa;font-size:18px">Поиск в TMDB...</div>');
+      self.html.html('<div class="dg-state"><div class="dg-spinner"></div><div>Поиск в TMDB...</div></div>');
       try { Lampa.Controller.toggle('content'); } catch (e) {}
 
-      if (!title && !url) { self.fallbackSearch(title); return; }
+      if (!fallbackTitle && !url) { self.fallbackSearch(fallbackTitle); return; }
 
       var api = Lampa.Api.sources.doramclub;
-      if (!api || !api.get) { self.fallbackSearch(title); return; }
+      if (!api || !api.get) { self.fallbackSearch(fallbackTitle); return; }
 
-      api.get(BASE_URL + '/api/tmdb/search?title=' + encodeURIComponent(title) + '&url=' + encodeURIComponent(url), function (json) {
+      var tmdbUrl = BASE_URL + '/api/tmdb/search?title=' + encodeURIComponent(title) + '&original_title=' + encodeURIComponent(originalTitle) + '&url=' + encodeURIComponent(url);
+      api.get(tmdbUrl, function (json) {
         if (json && json.id) {
           try {
             Lampa.Activity.replace({
-              component: 'full', id: json.id,
-              card: { id: json.id, title: json.title || json.name || title },
-              source: 'tmdb', method: json.type || 'tv'
+              component: 'full',
+              id: json.id,
+              card: { id: json.id, title: json.title || json.name || fallbackTitle },
+              source: 'tmdb',
+              method: json.type || 'tv'
             });
-          } catch (e) { self.fallbackSearch(title); }
+          } catch (e) { self.fallbackSearch(fallbackTitle); }
         } else {
-          self.fallbackSearch(title);
+          self.fallbackSearch(fallbackTitle);
         }
-      }, function () { self.fallbackSearch(title); });
+      }, function () { self.fallbackSearch(fallbackTitle); });
     };
 
     this.fallbackSearch = function (query) {
       if (!query) { try { Lampa.Activity.backward(); } catch (e) {} return; }
       log('fallback search: ' + query);
 
-      // 1. TMDB proxy search
       try {
         var proxyBase = 'http://tmdbapi.bylampa.online';
         try { var stored = Lampa.Storage.get('tmdb_proxy_api', ''); if (stored) proxyBase = stored; } catch (e) {}
@@ -103,9 +294,11 @@
             var first = json.results[0];
             try {
               Lampa.Activity.replace({
-                component: 'full', id: first.id,
+                component: 'full',
+                id: first.id,
                 card: { id: first.id, title: first.name || first.title || query },
-                source: 'tmdb', method: first.media_type || 'tv'
+                source: 'tmdb',
+                method: first.media_type || 'tv'
               });
               return;
             } catch (e) {}
@@ -120,40 +313,21 @@
       try {
         Lampa.Search.open({ query: query });
 
-        // Через 1.5с отправляем Enter в поле поиска
         setTimeout(function () {
           try {
             var inputs = document.querySelectorAll('input');
             for (var i = 0; i < inputs.length; i++) {
               var inp = inputs[i];
               if (inp.offsetParent !== null || inp.getBoundingClientRect) {
-                inp.value = query; inp.focus();
+                inp.value = query;
+                inp.focus();
                 inp.dispatchEvent(new Event('input', { bubbles: true }));
                 inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
                 inp.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
               }
             }
           } catch (e) {}
-
-          // Ждём новые карточки (результаты поиска)
-          var beforeCount = document.querySelectorAll('.card.selector').length;
-          var found = false;
-          var pt = setInterval(function () {
-            if (found) return;
-            try {
-              var cards = document.querySelectorAll('.card.selector');
-              if (cards.length <= beforeCount) return;
-              found = true; clearInterval(pt);
-              var nc = cards[beforeCount];
-              try { nc.classList.add('focus'); } catch (e) {}
-              setTimeout(function () {
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-                document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
-              }, 500);
-            } catch (e) {}
-          }, 800);
-          setTimeout(function () { clearInterval(pt); }, 8000);
-        }, 1500);
+        }, 1200);
       } catch (e) {}
     }
 
@@ -197,7 +371,7 @@
     };
 
     try {
-      var s = Object.assign({}, (Lampa.Params.values && Lampa.Params.values['source']) ? Lampa.Params.values['source'] : {});
+      var s = Object.assign({}, (Lampa.Params.values && Lampa.Params.values.source) ? Lampa.Params.values.source : {});
       s[SOURCE_NAME] = SOURCE_NAME;
       Lampa.Params.select('source', s, 'tmdb');
     } catch (e) {}
@@ -206,7 +380,7 @@
       '<div class="menu__ico">' + ICON + '</div><div class="menu__text">' + SOURCE_NAME + '</div></li>');
     $('.menu .menu__list').eq(0).append(mi);
     mi.on('hover:enter', function () {
-      Lampa.Activity.push({ title: SOURCE_NAME, component: 'category', source: SOURCE_NAME, page: 1, url: '' });
+      Lampa.Activity.push({ title: SOURCE_NAME, component: 'dorama_grid', source: SOURCE_NAME, page: 1 });
     });
 
     log('plugin loaded');
@@ -215,27 +389,31 @@
   if (window.appready) startPlugin();
   else Lampa.Listener.follow('app', function (e) { if (e.type === 'ready') startPlugin(); });
 
-  // CSS
   $('head').append('<style>' +
-    '.dorama-detail-root{height:100%;overflow-y:auto;background:#141414}' +
-    '.dd-wrap{position:relative;min-height:100%}' +
-    '.dd-bg{position:absolute;inset:0;background-size:cover;background-position:center}' +
-    '.dd-bgo{position:absolute;inset:0;background:linear-gradient(90deg,rgba(20,20,20,1) 0,rgba(20,20,20,0.9) 60%,rgba(20,20,20,0.7) 100%)}' +
-    '.dd-inner{position:relative;z-index:1;padding:30px}' +
-    '.dd-top{display:flex;gap:30px;align-items:flex-start}' +
-    '.dd-pcol{flex-shrink:0}' +
-    '.dd-img{width:260px;height:390px;border-radius:8px;object-fit:cover;display:block}' +
-    '.dcol{flex:1;color:#eee}' +
-    '.dd-title{font-size:26px;font-weight:700;color:#fff;margin-bottom:4px}' +
-    '.dd-orig{font-size:14px;color:#999;margin-bottom:12px}' +
-    '.dd-tags{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}' +
-    '.dd-tag{background:rgba(255,255,255,0.1);padding:4px 12px;border-radius:4px;font-size:13px;color:#ccc}' +
-    '.dd-overview{font-size:14px;line-height:1.6;color:#bbb;margin-bottom:24px;max-width:700px}' +
-    '.dd-acts{display:flex;gap:12px}' +
-    '.dd-btn{padding:12px 28px;border-radius:6px;font-size:15px;font-weight:600;cursor:pointer;outline:none}' +
-    '.dd-btn[data-do=watch]{background:#ff9800;color:#141414}' +
-    '.dd-btn[data-do=watch].focus{box-shadow:0 0 0 3px #ffb74d}' +
-    '.dd-btn[data-do=back]{background:rgba(255,255,255,0.1);color:#eee}' +
-    '.dd-btn[data-do=back].focus{box-shadow:0 0 0 3px rgba(255,255,255,0.3)}' +
+    '.dorama-grid-root,.dorama-detail-root{height:100%;overflow-y:auto;background:#101014;color:#fff}' +
+    '.dg-page{padding:2.4em 2.8em 4em;background:radial-gradient(circle at 15% 0,rgba(255,152,0,.18),transparent 34em),linear-gradient(180deg,#15151c,#0d0d11)}' +
+    '.dg-hero{margin-bottom:2.2em;max-width:58em}' +
+    '.dg-kicker{display:inline-block;margin-bottom:.8em;padding:.35em .7em;border:1px solid rgba(255,152,0,.35);border-radius:999px;color:#ffb74d;font-size:.85em}' +
+    '.dg-title{font-size:3.2em;font-weight:800;line-height:1;margin-bottom:.22em;letter-spacing:-.03em}' +
+    '.dg-subtitle{font-size:1.15em;color:#c6c6d2;line-height:1.45;max-width:46em}' +
+    '.dg-badges{display:flex;gap:.7em;flex-wrap:wrap;margin-top:1.1em}' +
+    '.dg-badges span{padding:.45em .75em;border-radius:.55em;background:rgba(255,255,255,.08);color:#e8e8ef;font-size:.9em}' +
+    '.dg-section{margin-top:2.5em}' +
+    '.dg-section-head{display:flex;align-items:center;gap:.8em;margin-bottom:1em}' +
+    '.dg-section-title{font-size:1.45em;font-weight:700}' +
+    '.dg-count{padding:.25em .55em;border-radius:.45em;background:#ff9800;color:#111;font-weight:700;font-size:.85em}' +
+    '.dg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(9.5em,1fr));gap:1.2em}' +
+    '.dg-card{position:relative;min-width:0;cursor:pointer;border-radius:.9em;padding:.45em;background:rgba(255,255,255,.045);transition:transform .15s ease,background .15s ease,box-shadow .15s ease}' +
+    '.dg-card.focus{transform:translateY(-.35em) scale(1.035);background:rgba(255,152,0,.18);box-shadow:0 0 0 .18em #ff9800,0 1em 2.4em rgba(0,0,0,.35)}' +
+    '.dg-poster{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:.65em;display:block;background:#222}' +
+    '.dg-poster-empty{display:flex;align-items:center;justify-content:center;color:#777;text-align:center;font-size:.9em}' +
+    '.dg-rank{position:absolute;left:.7em;top:.7em;z-index:2;min-width:2em;height:2em;border-radius:999px;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff;font-size:.9em}' +
+    '.dg-card-title{font-size:.98em;font-weight:700;line-height:1.22;margin-top:.7em;min-height:2.35em;color:#fff;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}' +
+    '.dg-card-meta{font-size:.78em;color:#aaa;margin-top:.35em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
+    '.dg-state{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1em;color:#cfcfd8;font-size:1.15em;text-align:center;padding:2em}' +
+    '.dg-spinner{width:2.6em;height:2.6em;border:.22em solid rgba(255,255,255,.16);border-top-color:#ff9800;border-radius:50%;animation:dg-spin .8s linear infinite}' +
+    '.dg-error-title{font-size:1.5em;font-weight:800;color:#ffb74d}' +
+    '@keyframes dg-spin{to{transform:rotate(360deg)}}' +
+    '@media(max-width:700px){.dg-page{padding:1.3em}.dg-title{font-size:2.2em}.dg-grid{grid-template-columns:repeat(auto-fill,minmax(7.4em,1fr));gap:.85em}}' +
   '</style>');
-})()
+})();

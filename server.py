@@ -3,11 +3,19 @@ import re
 import json
 import time
 import logging
+import hashlib
+from io import BytesIO
+from html import unescape
 from urllib.parse import urlparse, quote
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,20 +31,55 @@ SESSION.headers.update({
 })
 
 DORAMCLUB = 'https://doramclub.ru'
+DORAMYCLUB_PRO = 'https://doramyclub.pro'
+DORAMALAND = 'https://dorama.land'
 
 # ====== Helpers ======
 
-def to_full_url(path_or_url):
+def to_full_url(path_or_url, base=DORAMCLUB):
     if not path_or_url:
         return ''
     if path_or_url.startswith('http'):
         return path_or_url
-    return DORAMCLUB + path_or_url
+    return base.rstrip('/') + '/' + path_or_url.lstrip('/')
+
+
+def clean_text(value):
+    value = re.sub(r'<[^>]+>', ' ', value or '')
+    return re.sub(r'\s+', ' ', unescape(value)).strip()
+
+
+def get_attr(tag, name):
+    m = re.search(name + r'=["\']([^"\']+)', tag or '')
+    return m.group(1) if m else ''
+
+
+def stable_id(value):
+    digest = hashlib.md5((value or 'dorama').encode('utf-8')).hexdigest()
+    return int(digest[:8], 16)
+
+
+def dedupe_items(items):
+    seen = set()
+    result = []
+    for item in items:
+        key = (item.get('url') or item.get('title') or '').lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def app_url(path):
+    try:
+        return request.host_url.rstrip('/') + path
+    except RuntimeError:
+        return path
 
 # ====== DORAMCLUB.RU ======
 
-@app.route('/api/doramclub/top')
-def doramclub_top():
+def get_doramclub_top():
     resp = SESSION.get(f'{DORAMCLUB}/lists.html', timeout=15)
     resp.encoding = 'utf-8'
     html = resp.text
@@ -52,10 +95,13 @@ def doramclub_top():
     for m in pattern.finditer(html):
         img_url = m.group(1)
         link = m.group(2)
+        url = to_full_url(link)
         items.append({
+            'id': stable_id(url),
             'title': m.group(3).strip(),
-            'url': to_full_url(link),
+            'url': url,
             'poster': to_full_url(img_url),
+            'source': 'doramclub',
         })
 
     year_map = {}
@@ -73,7 +119,216 @@ def doramclub_top():
             item['year'] = year_map[item['url']]
             item['first_air_date'] = year_map[item['url']] + '-01-01'
 
+    return items
+
+
+@app.route('/api/doramclub/top')
+def doramclub_top():
+    items = get_doramclub_top()
     return jsonify({'source': 'doramclub', 'items': items, 'count': len(items)})
+
+
+def get_doramyclub_pro_best():
+    resp = SESSION.get(f'{DORAMYCLUB_PRO}/best.html', timeout=15)
+    resp.encoding = 'utf-8'
+    html = resp.text
+
+    items = []
+    blocks = re.findall(r'<section class="post-list">(.*?)</section>', html, re.DOTALL)
+    for block in blocks:
+        link_m = re.search(r'<div class="img-link">\s*(<a\b[^>]*>(.*?)</a>)', block, re.DOTALL)
+        if not link_m:
+            continue
+
+        link_tag = link_m.group(1).split('>', 1)[0]
+        link_inner = link_m.group(2)
+        url = to_full_url(get_attr(link_tag, 'href'), DORAMYCLUB_PRO)
+
+        img_tag_m = re.search(r'<img\b[^>]*>', link_inner, re.DOTALL)
+        img_tag = img_tag_m.group(0) if img_tag_m else ''
+        poster = get_attr(img_tag, 'data-src') or get_attr(img_tag, 'src')
+        poster = to_full_url(poster, DORAMYCLUB_PRO)
+
+        title_m = re.search(r'<span>(.*?)</span>', link_inner, re.DOTALL)
+        title = clean_text(title_m.group(1) if title_m else '')
+        if not title:
+            title = clean_text(get_attr(img_tag, 'alt')).replace('Дорама ', '')
+
+        original_m = re.search(r'<em>(.*?)</em>', block, re.DOTALL)
+        original_title = clean_text(original_m.group(1) if original_m else '')
+
+        meta_values = [clean_text(v) for v in re.findall(r'<u>(.*?)</u>', block, re.DOTALL)]
+        meta = ' • '.join([v for v in meta_values if v])
+        year = ''
+        year_m = re.search(r'(19\d{2}|20\d{2})', meta or clean_text(block))
+        if year_m:
+            year = year_m.group(1)
+
+        episodes = 0
+        episodes_m = re.search(r'Сериал:\s*</span>\s*(\d+)\s*сер', block, re.DOTALL)
+        if episodes_m:
+            episodes = int(episodes_m.group(1))
+
+        status_m = re.search(r'<div class="status">(.*?)</div>', block, re.DOTALL)
+        status = clean_text(status_m.group(1) if status_m else '')
+
+        if title and url:
+            items.append({
+                'id': stable_id(url),
+                'title': title,
+                'original_title': original_title,
+                'url': url,
+                'poster': poster,
+                'year': year,
+                'first_air_date': year + '-01-01' if year else '',
+                'number_of_episodes': episodes,
+                'status': status,
+                'description': meta,
+                'source': 'doramyclub_pro',
+            })
+
+    return dedupe_items(items)
+
+
+@app.route('/api/doramyclub-pro/best')
+def doramyclub_pro_best():
+    items = get_doramyclub_pro_best()
+    return jsonify({'source': 'doramyclub_pro', 'items': items, 'count': len(items)})
+
+
+def get_doramaland_popular():
+    resp = SESSION.get(DORAMALAND, timeout=15)
+    resp.encoding = 'utf-8'
+    html = resp.text
+
+    items = []
+    pattern = re.compile(r'<a\b(?=[^>]*class="[^"]*navigation-popular-serial)[^>]*>(.*?)</a>', re.DOTALL)
+    for m in pattern.finditer(html):
+        full_link = m.group(0)
+        link_tag = full_link.split('>', 1)[0]
+        block = m.group(1)
+
+        url = to_full_url(get_attr(link_tag, 'href'), DORAMALAND)
+        title = clean_text(get_attr(link_tag, 'title'))
+
+        name_m = re.search(r'<div class="navigation-popular-serial__name">(.*?)</div>', block, re.DOTALL)
+        if name_m:
+            title = clean_text(name_m.group(1)) or title
+
+        img_tag_m = re.search(r'<img\b[^>]*>', block, re.DOTALL)
+        img_tag = img_tag_m.group(0) if img_tag_m else ''
+        poster = get_attr(img_tag, 'data-src') or get_attr(img_tag, 'src')
+        if poster.startswith('data:image'):
+            poster = ''
+        poster = to_full_url(poster, DORAMALAND)
+        if poster:
+            poster = app_url('/api/image?url=' + quote(poster, safe=''))
+
+        appends = [clean_text(v) for v in re.findall(r'<div class="navigation-popular-serial__append">(.*?)</div>', block, re.DOTALL)]
+        year = ''
+        genres = ''
+        for value in appends:
+            if re.fullmatch(r'\d{4}', value):
+                year = value
+            elif value and not genres:
+                genres = value
+
+        if title and url:
+            items.append({
+                'id': stable_id(url),
+                'title': title,
+                'url': url,
+                'poster': poster,
+                'year': year,
+                'first_air_date': year + '-01-01' if year else '',
+                'description': genres,
+                'source': 'doramaland',
+            })
+
+    return dedupe_items(items)
+
+
+@app.route('/api/doramaland/popular')
+def doramaland_popular():
+    items = get_doramaland_popular()
+    return jsonify({'source': 'doramaland', 'items': items, 'count': len(items)})
+
+
+@app.route('/api/image')
+def image_proxy():
+    image_url = request.args.get('url', '').strip()
+    if not image_url:
+        return jsonify({'error': 'url required'}), 400
+
+    parsed = urlparse(image_url)
+    allowed_hosts = {'dorama.land', 'www.dorama.land', '6.doramaland.center'}
+    if parsed.scheme not in {'http', 'https'} or parsed.netloc not in allowed_hosts:
+        return jsonify({'error': 'host not allowed'}), 400
+
+    try:
+        resp = SESSION.get(
+            image_url,
+            headers={
+                'Referer': DORAMALAND + '/',
+                'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error('image proxy error for %s: %s', image_url, e)
+        return jsonify({'error': 'image fetch failed'}), 502
+
+    content_type = (resp.headers.get('Content-Type') or 'image/jpeg').split(';')[0].strip().lower()
+    content = resp.content
+
+    # Media Station X / старые TV WebView часто не показывают WebP, поэтому отдаём JPEG.
+    if Image and (content_type == 'image/webp' or parsed.path.lower().endswith('.webp')):
+        try:
+            image = Image.open(BytesIO(content)).convert('RGB')
+            buffer = BytesIO()
+            image.save(buffer, format='JPEG', quality=88, optimize=True)
+            content = buffer.getvalue()
+            content_type = 'image/jpeg'
+        except Exception as e:
+            logger.error('image convert error for %s: %s', image_url, e)
+
+    response = Response(content, mimetype=content_type)
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Cache-Control'] = 'public, max-age=86400'
+    return response
+
+
+@app.route('/api/dorama/sections')
+def dorama_sections():
+    sections = []
+
+    sources = [
+        ('doramclub_top', 'Топ-100 DoramClub', get_doramclub_top),
+        ('doramyclub_best', 'Лучшие DoramyClub.pro', get_doramyclub_pro_best),
+        ('doramaland_popular', 'Популярное сейчас Dorama.land', get_doramaland_popular),
+    ]
+
+    for key, title, loader in sources:
+        try:
+            items = loader()
+            sections.append({
+                'key': key,
+                'title': title,
+                'items': items,
+                'count': len(items),
+            })
+        except Exception as e:
+            logger.error('section %s error: %s', key, e)
+            sections.append({
+                'key': key,
+                'title': title,
+                'items': [],
+                'count': 0,
+                'error': str(e),
+            })
+
+    return jsonify({'sections': sections, 'count': sum(len(s['items']) for s in sections)})
 
 
 @app.route('/api/doramclub/detail')
@@ -233,16 +488,19 @@ TMDB_API_KEY = os.environ.get('TMDB_API_KEY', '')
 @app.route('/api/tmdb/search')
 def tmdb_search():
     title = request.args.get('title', '').strip()
+    original_title = request.args.get('original_title', '').strip()
     detail_url = request.args.get('url', '').strip()
-    if not title and not detail_url:
+    if not title and not original_title and not detail_url:
         return jsonify({'error': 'title or url required', 'id': None}), 400
 
-    logger.info('TMDB search: title=%s url=%s', title, detail_url)
+    logger.info('TMDB search: title=%s original_title=%s url=%s', title, original_title, detail_url)
 
     # Собираем варианты для поиска (в порядке приоритета)
     queries = []
     if title:
         queries.append(title)  # исходное название (русское)
+    if original_title and original_title not in queries:
+        queries.append(original_title)
 
     # Если есть URL дорамы, пытаемся достать оригинальное название
     if detail_url:
@@ -368,7 +626,9 @@ def serve_plugin():
         mimetype='application/javascript'
     )
     resp.headers['Access-Control-Allow-Origin'] = '*'
-    resp.headers['Cache-Control'] = 'no-cache, max-age=300'
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
     return resp
 
 
