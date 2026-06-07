@@ -669,17 +669,18 @@ def fetch_page_data_doramyclub(episode_id, known_url=None):
 
 
 def get_playlist_doramyclub(title_id, publisher_id, aggregator):
-    resp = SESSION.get(
+    # Используем requests default UA, чтобы получить srcAg=UNKNOWN (Chrome UA даёт srcAg=CHROME, URL не работают)
+    resp = requests.get(
         CDN_API_PLAYLIST,
         params={"pub": publisher_id, "aggr": aggregator, "id": title_id},
-        timeout=15,
+        timeout=20,
     )
     resp.raise_for_status()
     return resp.json()
 
 
 def get_video_urls_doramyclub(vk_id):
-    resp = SESSION.get(f"{CDN_API_VIDEO}/{vk_id}", timeout=15)
+    resp = requests.get(f"{CDN_API_VIDEO}/{vk_id}", timeout=20)
     resp.raise_for_status()
     data = resp.json()
     sources = data.get("sources", {})
@@ -891,19 +892,12 @@ def doramyclub_proxy():
                 'User-Agent': '',
                 'Accept': '*/*',
             },
-            timeout=30,
-            stream=True,
+            timeout=60,
         )
         resp.raise_for_status()
 
-        @stream_with_context
-        def generate():
-            for chunk in resp.iter_content(chunk_size=65536):
-                if chunk:
-                    yield chunk
-
         response = Response(
-            generate(),
+            resp.content,
             status=resp.status_code,
             mimetype=resp.headers.get('Content-Type', 'application/octet-stream'),
         )
