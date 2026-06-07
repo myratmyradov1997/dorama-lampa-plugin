@@ -581,6 +581,229 @@ def get_cdnvideohub_playlist(title_id, pub_id, aggr):
     return result
 
 
+# ====== DORAMYCLUB.PRO STREAMING ======
+
+CDN_API_PLAYLIST = "https://plapi.cdnvideohub.com/api/v1/player/sv/playlist"
+CDN_API_VIDEO = "https://plapi.cdnvideohub.com/api/v1/player/sv/video"
+
+
+def extract_episode_id_doramyclub(url_or_id):
+    m = re.search(r'/(\d+)-[^/]+\.html', url_or_id)
+    if m:
+        return m.group(1), url_or_id
+    if url_or_id.isdigit():
+        return url_or_id, None
+    m = re.search(r'/(\d+)', url_or_id)
+    if m:
+        return m.group(1), None
+    return None, None
+
+
+def fetch_page_data_doramyclub(episode_id, known_url=None):
+    if known_url:
+        url = known_url
+    else:
+        url = f"{DORAMYCLUB_PRO}/index.php?newsid={episode_id}"
+
+    resp = SESSION.get(
+        url,
+        headers={
+            **SESSION.headers,
+            "Accept": "text/html,application/xhtml+xml",
+        },
+        allow_redirects=True,
+        timeout=15,
+    )
+    resp.raise_for_status()
+    html = resp.text
+
+    player_data = None
+    player_match = re.search(
+        r'<video-player[^>]*data-title-id="(\d+)"[^>]*data-publisher-id="(\d+)"[^>]*data-aggregator="([^"]*)"',
+        html,
+    )
+
+    if player_match:
+        player_data = player_match.groups()
+    else:
+        player_match = re.search(r'data-title-id="(\d+)"', html)
+        if player_match:
+            title_id = player_match.group(1)
+            pub_match = re.search(r'data-publisher-id="(\d+)"', html)
+            pub_id = pub_match.group(1) if pub_match else "2256"
+            aggr_match = re.search(r'data-aggregator="([^"]*)"', html)
+            aggregator = aggr_match.group(1) if aggr_match else "mdl"
+            player_data = (title_id, pub_id, aggregator)
+
+    if player_data is None:
+        return None
+
+    # AJAX логирование (опционально)
+    try:
+        SESSION.post(
+            f"{DORAMYCLUB_PRO}/engine/cdnvideohub/ajax.php",
+            data={"id": episode_id},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": resp.url,
+            },
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+    page_title = ""
+    title_match = re.search(r'<title>(.*?)</title>', html)
+    if title_match:
+        page_title = title_match.group(1)
+
+    return {
+        "title_id": player_data[0],
+        "publisher_id": player_data[1],
+        "aggregator": player_data[2],
+        "news_id": episode_id,
+        "page_url": resp.url,
+        "page_title": page_title,
+    }
+
+
+def get_playlist_doramyclub(title_id, publisher_id, aggregator):
+    resp = SESSION.get(
+        CDN_API_PLAYLIST,
+        params={"pub": publisher_id, "aggr": aggregator, "id": title_id},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_video_urls_doramyclub(vk_id):
+    resp = SESSION.get(f"{CDN_API_VIDEO}/{vk_id}", timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    sources = data.get("sources", {})
+
+    hls_url = sources.get("hlsUrl", "")
+    if hls_url and hls_url.startswith("/"):
+        dash_url = sources.get("dashUrl", "")
+        if dash_url and dash_url.startswith("http"):
+            parsed = urlparse(dash_url)
+            hls_url = f"{parsed.scheme}://{parsed.netloc}{hls_url}"
+
+    return {
+        "hls": hls_url,
+        "dash": sources.get("dashUrl", ""),
+        "mp4_fullhd": sources.get("mpegFullHdUrl", ""),
+        "mp4_high": sources.get("mpegHighUrl", ""),
+        "mp4_medium": sources.get("mpegMediumUrl", ""),
+        "mp4_low": sources.get("mpegLowUrl", ""),
+        "mp4_lowest": sources.get("mpegLowestUrl", ""),
+        "mp4_tiny": sources.get("mpegTinyUrl", ""),
+        "duration": data.get("duration", 0),
+    }
+
+
+@app.route('/api/doramyclub/info')
+def doramyclub_info():
+    url = request.args.get('url', '').strip()
+    if not url:
+        return jsonify({'error': 'url required'}), 400
+
+    episode_id, known_url = extract_episode_id_doramyclub(url)
+    if not episode_id:
+        return jsonify({'error': 'invalid url format'}), 400
+
+    try:
+        page_data = fetch_page_data_doramyclub(episode_id, known_url)
+        if not page_data:
+            return jsonify({'error': 'player data not found'}), 404
+
+        playlist = get_playlist_doramyclub(
+            page_data["title_id"],
+            page_data["publisher_id"],
+            page_data["aggregator"]
+        )
+
+        # Группируем эпизоды и озвучки
+        items = playlist.get("items", [])
+        episodes = {}
+
+        for item in items:
+            season = item.get("season", 1)
+            episode = item.get("episode", 1)
+            key = f"S{season:02d}E{episode:02d}"
+
+            if key not in episodes:
+                episodes[key] = {
+                    "season": season,
+                    "episode": episode,
+                    "voice_studios": [],
+                }
+
+            episodes[key]["voice_studios"].append({
+                "name": item.get("voiceStudio", "—"),
+                "type": item.get("voiceType", ""),
+                "vk_id": item.get("vkId", ""),
+            })
+
+        return jsonify({
+            "title": playlist.get("titleName", ""),
+            "is_serial": playlist.get("isSerial", False),
+            "page_title": page_data["page_title"],
+            "episodes": list(episodes.values()),
+        })
+
+    except Exception as e:
+        logger.error('doramyclub info error: %s', e)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/doramyclub/stream')
+def doramyclub_stream():
+    vk_id = request.args.get('vk_id', '').strip()
+    if not vk_id:
+        return jsonify({'error': 'vk_id required'}), 400
+
+    try:
+        urls = get_video_urls_doramyclub(vk_id)
+
+        # Определяем наилучшее качество
+        quality_map = [
+            ("1080p", urls.get("mp4_fullhd")),
+            ("720p", urls.get("mp4_high")),
+            ("480p", urls.get("mp4_medium")),
+            ("360p", urls.get("mp4_low")),
+            ("240p", urls.get("mp4_lowest")),
+            ("144p", urls.get("mp4_tiny")),
+        ]
+
+        best_mp4 = None
+        for quality, url in quality_map:
+            if url:
+                best_mp4 = {"quality": quality, "url": url}
+                break
+
+        return jsonify({
+            "hls": urls.get("hls", ""),
+            "dash": urls.get("dash", ""),
+            "best_mp4": best_mp4,
+            "qualities": {
+                "1080p": urls.get("mp4_fullhd", ""),
+                "720p": urls.get("mp4_high", ""),
+                "480p": urls.get("mp4_medium", ""),
+                "360p": urls.get("mp4_low", ""),
+                "240p": urls.get("mp4_lowest", ""),
+                "144p": urls.get("mp4_tiny", ""),
+            },
+            "duration": urls.get("duration", 0),
+        })
+
+    except Exception as e:
+        logger.error('doramyclub stream error: %s', e)
+        return jsonify({'error': str(e)}), 500
+
+
 # ====== DORAMY.CLUB ======
 
 @app.route('/api/doramyclub/top-months')
@@ -613,6 +836,29 @@ def health():
 def serve_plugin():
     import os
     plugin_path = os.path.join(os.path.dirname(__file__), 'lampa-plugin.js')
+    with open(plugin_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Подставляем базовый URL сервера в плагин
+    base_url = request.host_url.rstrip('/')
+    content = content.replace('__BASE_URL__', base_url)
+
+    resp = app.response_class(
+        response=content,
+        status=200,
+        mimetype='application/javascript'
+    )
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
+
+
+@app.route('/online.js')
+def serve_online_plugin():
+    import os
+    plugin_path = os.path.join(os.path.dirname(__file__), 'dorama-online.js')
     with open(plugin_path, 'r', encoding='utf-8') as f:
         content = f.read()
 

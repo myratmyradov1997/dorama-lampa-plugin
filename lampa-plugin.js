@@ -284,6 +284,49 @@
       var fallbackTitle = title || originalTitle;
       var url = card.url || '';
 
+      // Если есть URL DoramyClub.pro — показываем выбор: Lampa или онлайн
+      if (url && url.indexOf('doramyclub.pro') !== -1) {
+        self.renderChoice(card, fallbackTitle);
+        return;
+      }
+
+      self.searchTmdb(card, fallbackTitle);
+    };
+
+    this.renderChoice = function (card, fallbackTitle) {
+      var html = '<div class="dg-page">';
+      html += '<div class="dg-hero">';
+      html += '<div class="dg-title">' + escapeHtml(card.title || 'Дорама') + '</div>';
+      html += '<div class="dg-subtitle">Выберите действие</div>';
+      html += '</div>';
+      html += '<div class="dg-grid">';
+      html += '<div class="dg-card selector choice-tmdb"><div class="dg-card-title">Открыть в Lampa</div><div class="dg-card-meta">Поиск в TMDB</div></div>';
+      html += '<div class="dg-card selector choice-online"><div class="dg-card-title">▶ Смотреть онлайн</div><div class="dg-card-meta">DoramyClub.pro</div></div>';
+      html += '</div></div>';
+
+      self.html.html(html);
+      try { Lampa.Controller.toggle('content'); } catch (e) {}
+
+      self.html.off('hover:enter click', '.choice-tmdb').on('hover:enter click', '.choice-tmdb', function () {
+        self.searchTmdb(card, fallbackTitle);
+      });
+
+      self.html.off('hover:enter click', '.choice-online').on('hover:enter click', '.choice-online', function () {
+        try { window.__dorama_online_card = card; } catch (e) {}
+        Lampa.Activity.push({
+          component: 'dorama_online',
+          title: card.title || 'Онлайн',
+          card: card,
+          params: { card: card },
+        });
+      });
+    };
+
+    this.searchTmdb = function (card, fallbackTitle) {
+      var title = card.title || card.name || '';
+      var originalTitle = card.original_title || card.original_name || '';
+      var url = card.url || '';
+
       self.html.html('<div class="dg-state"><div class="dg-spinner"></div><div>Поиск в TMDB...</div></div>');
       try { Lampa.Controller.toggle('content'); } catch (e) {}
 
