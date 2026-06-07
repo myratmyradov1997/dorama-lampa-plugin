@@ -294,32 +294,27 @@
     };
 
     this.renderChoice = function (card, fallbackTitle) {
+      self.currentCard = card;
+      self.currentFallbackTitle = fallbackTitle;
+      self.screenMode = 'choice';
+
       var html = '<div class="dg-page">';
       html += '<div class="dg-hero">';
       html += '<div class="dg-title">' + escapeHtml(card.title || 'Дорама') + '</div>';
       html += '<div class="dg-subtitle">Выберите действие</div>';
       html += '</div>';
       html += '<div class="dg-grid">';
-      html += '<div class="dg-card selector choice-tmdb"><div class="dg-card-title">Открыть в Lampa</div><div class="dg-card-meta">Поиск в TMDB</div></div>';
-      html += '<div class="dg-card selector choice-online"><div class="dg-card-title">▶ Смотреть онлайн</div><div class="dg-card-meta">DoramyClub.pro</div></div>';
+      html += '<div class="dg-card selector choice-tmdb" data-action="tmdb"><div class="dg-card-title">Открыть в Lampa</div><div class="dg-card-meta">Поиск в TMDB</div></div>';
+      html += '<div class="dg-card selector choice-online" data-action="online"><div class="dg-card-title">▶ Смотреть онлайн</div><div class="dg-card-meta">DoramyClub.pro</div></div>';
       html += '</div></div>';
 
       self.html.html(html);
-      try { Lampa.Controller.toggle('content'); } catch (e) {}
 
-      self.html.off('hover:enter click', '.choice-tmdb').on('hover:enter click', '.choice-tmdb', function () {
-        self.searchTmdb(card, fallbackTitle);
-      });
-
-      self.html.off('hover:enter click', '.choice-online').on('hover:enter click', '.choice-online', function () {
-        try { window.__dorama_online_card = card; } catch (e) {}
-        Lampa.Activity.push({
-          component: 'dorama_online',
-          title: card.title || 'Онлайн',
-          card: card,
-          params: { card: card },
-        });
-      });
+      // Обновляем коллекцию для навигации и устанавливаем фокус
+      try {
+        Lampa.Controller.collectionSet(self.html[0]);
+        Lampa.Controller.collectionFocus(false, self.html[0]);
+      } catch (e) {}
     };
 
     this.searchTmdb = function (card, fallbackTitle) {
@@ -407,11 +402,59 @@
     this.render = function (js) { return js ? this.html : $(this.html); };
     this.start = function () {
       Lampa.Controller.add('content', {
-        toggle: function () { Lampa.Controller.collectionSet(self.html[0]); Lampa.Controller.collectionFocus(false, self.html[0]); },
-        left: function () { if (Navigator.canmove('left')) Navigator.move('left'); else Lampa.Controller.toggle('menu'); },
-        up: function () { if (Navigator.canmove('up')) Navigator.move('up'); else Lampa.Controller.toggle('head'); },
+        toggle: function () {
+          Lampa.Controller.collectionSet(self.html[0]);
+          Lampa.Controller.collectionFocus(false, self.html[0]);
+        },
+        left: function () {
+          if (Navigator.canmove('left')) Navigator.move('left');
+          else Lampa.Controller.toggle('menu');
+        },
+        up: function () {
+          if (Navigator.canmove('up')) Navigator.move('up');
+          else Lampa.Controller.toggle('head');
+        },
         down: function () { Navigator.move('down'); },
         right: function () { Navigator.move('right'); },
+        enter: function () {
+          // Находим сфокусированный элемент
+          var focused = self.html.find('.dg-card.focus').eq(0);
+          if (!focused.length) focused = self.html.find('.dg-card.selector').eq(0);
+          if (!focused.length) return;
+
+          var action = focused.attr('data-action');
+          log('enter on action: ' + action);
+
+          if (action === 'tmdb') {
+            if (self.currentCard && self.currentFallbackTitle !== undefined) {
+              self.searchTmdb(self.currentCard, self.currentFallbackTitle);
+            }
+          } else if (action === 'online') {
+            if (self.currentCard) {
+              try { window.__dorama_online_card = self.currentCard; } catch (e) {}
+              Lampa.Activity.push({
+                component: 'dorama_online',
+                title: self.currentCard.title || 'Онлайн',
+                card: self.currentCard,
+                params: { card: self.currentCard },
+              });
+            }
+          } else if (self.screenMode === 'choice') {
+            // Fallback: если data-action нет, но мы на экране выбора
+            var isOnline = focused.hasClass('choice-online');
+            if (isOnline && self.currentCard) {
+              try { window.__dorama_online_card = self.currentCard; } catch (e) {}
+              Lampa.Activity.push({
+                component: 'dorama_online',
+                title: self.currentCard.title || 'Онлайн',
+                card: self.currentCard,
+                params: { card: self.currentCard },
+              });
+            } else if (self.currentCard && self.currentFallbackTitle !== undefined) {
+              self.searchTmdb(self.currentCard, self.currentFallbackTitle);
+            }
+          }
+        },
         back: function () { Lampa.Activity.backward(); }
       });
     };
