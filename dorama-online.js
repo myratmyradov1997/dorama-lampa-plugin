@@ -197,20 +197,23 @@
         return;
       }
 
+      // Используем proxy, т.к. CDN блокирует Chrome User-Agent плеера Lampa
+      var proxyUrl = BASE_URL + '/api/doramyclub/proxy?url=' + encodeURIComponent(best.url);
+
       var element = {
         title: (card.title || card.name || playlistData.title || 'Дорама') + ' — S' + (episode.season || 1) + 'E' + (episode.episode || 1) + ' | ' + studio.name,
-        url: best.url,
+        url: proxyUrl,
         timeline: {},
         isonline: true,
       };
 
-      // Добавляем качества
+      // Качества тоже через proxy
       var q = {};
       if (streamData.qualities) {
         var qualityOrder = ['1080p', '720p', '480p', '360p', '240p', '144p'];
         qualityOrder.forEach(function (quality) {
           if (streamData.qualities[quality]) {
-            q[quality] = streamData.qualities[quality];
+            q[quality] = BASE_URL + '/api/doramyclub/proxy?url=' + encodeURIComponent(streamData.qualities[quality]);
           }
         });
       }
@@ -218,7 +221,7 @@
         element.quality = q;
       }
 
-      log('play: ' + best.url.substring(0, 100) + '...');
+      log('play: ' + proxyUrl.substring(0, 100) + '...');
 
       Lampa.Player.play(element);
     };

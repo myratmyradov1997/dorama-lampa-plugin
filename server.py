@@ -886,22 +886,40 @@ def doramyclub_proxy():
         return jsonify({'error': 'url required'}), 400
 
     try:
+        headers = {
+            'User-Agent': '',
+            'Accept': '*/*',
+        }
+        # Поддержка Range requests для перемотки
+        range_header = request.headers.get('Range')
+        if range_header:
+            headers['Range'] = range_header
+
         resp = SESSION.get(
             video_url,
-            headers={
-                'User-Agent': '',
-                'Accept': '*/*',
-            },
+            headers=headers,
             timeout=60,
+            stream=True,
         )
         resp.raise_for_status()
 
+        def generate():
+            for chunk in resp.iter_content(chunk_size=262144):
+                if chunk:
+                    yield chunk
+
         response = Response(
-            resp.content,
+            generate(),
             status=resp.status_code,
             mimetype=resp.headers.get('Content-Type', 'application/octet-stream'),
         )
         response.headers['Access-Control-Allow-Origin'] = '*'
+        if resp.headers.get('Content-Length'):
+            response.headers['Content-Length'] = resp.headers.get('Content-Length')
+        if resp.headers.get('Accept-Ranges'):
+            response.headers['Accept-Ranges'] = resp.headers.get('Accept-Ranges')
+        if range_header and resp.headers.get('Content-Range'):
+            response.headers['Content-Range'] = resp.headers.get('Content-Range')
         return response
 
     except Exception as e:
