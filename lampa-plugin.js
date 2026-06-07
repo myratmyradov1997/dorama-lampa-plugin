@@ -462,6 +462,15 @@
   if (window.appready) startPlugin();
   else Lampa.Listener.follow('app', function (e) { if (e.type === 'ready') startPlugin(); });
 
+  // Автозагрузка online-плагина для просмотра с DoramyClub.pro
+  try {
+    if (window.Lampa && Lampa.Utils && Lampa.Utils.putScript) {
+      Lampa.Utils.putScript([BASE_URL + '/online.js'], function () {}, false, function () {
+        log('online plugin auto-loaded');
+      }, true);
+    }
+  } catch (e) {}
+
   $('head').append('<style>' +
     '.dorama-grid-root,.dorama-detail-root{height:100%;overflow-y:auto;background:#101014;color:#fff}' +
     '.dg-page{padding:2.4em 2.8em 4em;background:radial-gradient(circle at 15% 0,rgba(255,152,0,.18),transparent 34em),linear-gradient(180deg,#15151c,#0d0d11)}' +
