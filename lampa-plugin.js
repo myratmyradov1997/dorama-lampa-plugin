@@ -142,7 +142,7 @@
       html += '<div class="dg-hero">';
       html += '<div class="dg-kicker">Для удобного просмотра на ТВ</div>';
       html += '<div class="dg-title">Топы дорам</div>';
-      html += '<div class="dg-subtitle">DoramClub, DoramyClub.pro и популярное с Dorama.land в одной кастомной сетке.</div>';
+      html += '<div class="dg-subtitle">Сначала популярное Dorama.land, затем DoramyClub.pro и DoramClub в одной кастомной сетке.</div>';
       html += '<div class="dg-badges"><span>' + total + ' карточек</span><span>TMDB + поиск Lampa</span></div>';
       html += '</div>';
 
@@ -216,13 +216,43 @@
       if (focused.length) self.openCardElement(focused[0]);
     };
 
+    this.scrollToFocused = function () {
+      var focused = self.html.find('.dg-card.focus').eq(0);
+      if (!focused.length) return;
+
+      var card = focused[0];
+      var root = self.html[0];
+      if (!card || !root) return;
+
+      try {
+        var cardRect = card.getBoundingClientRect();
+        var rootRect = root.getBoundingClientRect();
+        var padding = 80;
+
+        if (cardRect.top < rootRect.top + padding) {
+          root.scrollTop -= (rootRect.top + padding - cardRect.top);
+        } else if (cardRect.bottom > rootRect.bottom - padding) {
+          root.scrollTop += (cardRect.bottom - (rootRect.bottom - padding));
+        }
+
+        if (typeof card.scrollIntoView === 'function') {
+          card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        }
+      } catch (e) {}
+    };
+
+    this.afterMove = function () {
+      setTimeout(function () { self.scrollToFocused(); }, 40);
+      setTimeout(function () { self.scrollToFocused(); }, 160);
+    };
+
     this.start = function () {
       Lampa.Controller.add('content', {
-        toggle: function () { Lampa.Controller.collectionSet(self.html[0]); Lampa.Controller.collectionFocus(false, self.html[0]); },
-        left: function () { if (Navigator.canmove('left')) Navigator.move('left'); else Lampa.Controller.toggle('menu'); },
-        up: function () { if (Navigator.canmove('up')) Navigator.move('up'); else Lampa.Controller.toggle('head'); },
-        down: function () { Navigator.move('down'); },
-        right: function () { Navigator.move('right'); },
+        toggle: function () { Lampa.Controller.collectionSet(self.html[0]); Lampa.Controller.collectionFocus(false, self.html[0]); self.afterMove(); },
+        left: function () { if (Navigator.canmove('left')) { Navigator.move('left'); self.afterMove(); } else Lampa.Controller.toggle('menu'); },
+        up: function () { if (Navigator.canmove('up')) { Navigator.move('up'); self.afterMove(); } else Lampa.Controller.toggle('head'); },
+        down: function () { Navigator.move('down'); self.afterMove(); },
+        right: function () { Navigator.move('right'); self.afterMove(); },
         enter: function () { self.openFocusedCard(); },
         back: function () { Lampa.Activity.backward(); }
       });

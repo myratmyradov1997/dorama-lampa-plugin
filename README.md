@@ -5,9 +5,9 @@
 ## Возможности
 
 - 🎬 **Кастомная сетка** с постерами, секциями и удобной навигацией с пульта
-- 📌 **Топ-100 DoramClub** с doramclub.ru
-- 📌 **Лучшие DoramyClub.pro** с doramyclub.pro/best.html
 - 📌 **Популярное сейчас Dorama.land** из блока «Популярное» на dorama.land
+- 📌 **Лучшие DoramyClub.pro** с doramyclub.pro/best.html
+- 📌 **Топ-100 DoramClub** с doramclub.ru
 - 🖼️ Постеры Dorama.land проксируются через backend и конвертируются из WebP в JPEG для старых TV/WebView
 - 🔍 **Автопоиск в TMDB** — при клике на дораму ищет её через TMDB по названию или оригинальному названию
 - 📺 Если найдена в TMDB — открывается **стандартная страница фильма** Lampa с актёрами, описанием, кнопкой «Смотреть»
@@ -68,9 +68,9 @@ python3 server.py
 
 ### ✅ Работает
 - Кастомная сетка с несколькими секциями
-- Список 100 дорам с doramclub.ru
-- 100 лучших дорам с doramyclub.pro
 - 12 популярных дорам из блока Dorama.land
+- 100 лучших дорам с doramyclub.pro
+- Список 100 дорам с doramclub.ru
 - Постеры Dorama.land через image proxy с конвертацией WebP в JPEG
 - Поиск TMDB ID по названию
 - Для найденных в TMDB — стандартный `full` компонент Lampa

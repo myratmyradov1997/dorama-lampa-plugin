@@ -304,9 +304,9 @@ def dorama_sections():
     sections = []
 
     sources = [
-        ('doramclub_top', 'Топ-100 DoramClub', get_doramclub_top),
-        ('doramyclub_best', 'Лучшие DoramyClub.pro', get_doramyclub_pro_best),
         ('doramaland_popular', 'Популярное сейчас Dorama.land', get_doramaland_popular),
+        ('doramyclub_best', 'Лучшие DoramyClub.pro', get_doramyclub_pro_best),
+        ('doramclub_top', 'Топ-100 DoramClub', get_doramclub_top),
     ]
 
     for key, title, loader in sources:
