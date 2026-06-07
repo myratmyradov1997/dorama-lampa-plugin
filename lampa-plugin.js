@@ -310,7 +310,22 @@
 
       self.html.html(html);
 
-      // Обновляем коллекцию для навигации и устанавливаем фокус
+      // Обработчики для hover:enter (TV/пульт) и click (мышь)
+      self.html.off('hover:enter click', '.choice-tmdb').on('hover:enter click', '.choice-tmdb', function () {
+        self.searchTmdb(card, fallbackTitle);
+      });
+
+      self.html.off('hover:enter click', '.choice-online').on('hover:enter click', '.choice-online', function () {
+        try { window.__dorama_online_card = card; } catch (e) {}
+        Lampa.Activity.push({
+          component: 'dorama_online',
+          title: card.title || 'Онлайн',
+          card: card,
+          params: { card: card },
+        });
+      });
+
+      // Устанавливаем фокус для навигации с пульта
       try {
         Lampa.Controller.collectionSet(self.html[0]);
         Lampa.Controller.collectionFocus(false, self.html[0]);
