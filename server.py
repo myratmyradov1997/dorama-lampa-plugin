@@ -9,7 +9,7 @@ from html import unescape
 from urllib.parse import urlparse, quote
 
 import requests
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
 
 try:
@@ -876,6 +876,43 @@ def serve_online_plugin():
     resp.headers['Pragma'] = 'no-cache'
     resp.headers['Expires'] = '0'
     return resp
+
+
+@app.route('/api/doramyclub/proxy')
+def doramyclub_proxy():
+    video_url = request.args.get('url', '').strip()
+    if not video_url:
+        return jsonify({'error': 'url required'}), 400
+
+    try:
+        resp = SESSION.get(
+            video_url,
+            headers={
+                'User-Agent': '',
+                'Accept': '*/*',
+            },
+            timeout=30,
+            stream=True,
+        )
+        resp.raise_for_status()
+
+        @stream_with_context
+        def generate():
+            for chunk in resp.iter_content(chunk_size=65536):
+                if chunk:
+                    yield chunk
+
+        response = Response(
+            generate(),
+            status=resp.status_code,
+            mimetype=resp.headers.get('Content-Type', 'application/octet-stream'),
+        )
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+
+    except Exception as e:
+        logger.error('doramyclub proxy error: %s', e)
+        return jsonify({'error': str(e)}), 502
 
 
 if __name__ == '__main__':
