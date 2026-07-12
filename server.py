@@ -4,9 +4,10 @@ import json
 import time
 import logging
 import hashlib
+import uuid
 from io import BytesIO
 from html import unescape
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse, quote, urljoin
 
 import requests
 from flask import Flask, Response, jsonify, request, stream_with_context
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
+APP_VERSION = '2.0.0'
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -33,6 +35,18 @@ SESSION.headers.update({
 DORAMCLUB = 'https://doramclub.ru'
 DORAMYCLUB_PRO = 'https://doramyclub.pro'
 DORAMALAND = 'https://dorama.land'
+
+VIDEO_PROXY_HOST_SUFFIXES = tuple(
+    value.strip().lower().lstrip('.')
+    for value in os.environ.get(
+        'VIDEO_PROXY_HOST_SUFFIXES',
+        'okcdn.ru,mycdn.me,cdnvideohub.com',
+    ).split(',')
+    if value.strip()
+)
+VIDEO_CONNECT_TIMEOUT = float(os.environ.get('VIDEO_CONNECT_TIMEOUT', '10'))
+VIDEO_READ_TIMEOUT = float(os.environ.get('VIDEO_READ_TIMEOUT', '35'))
+VIDEO_STREAM_RETRIES = int(os.environ.get('VIDEO_STREAM_RETRIES', '2'))
 
 # ====== Helpers ======
 
@@ -76,6 +90,82 @@ def app_url(path):
         return request.host_url.rstrip('/') + path
     except RuntimeError:
         return path
+
+
+def is_allowed_video_url(value):
+    """Разрешает проксирование только HTTP(S)-адресов известных видеохостов."""
+    try:
+        parsed = urlparse(value)
+        host = (parsed.hostname or '').lower().rstrip('.')
+    except Exception:
+        return False
+
+    if parsed.scheme not in {'http', 'https'} or not host:
+        return False
+
+    return any(host == suffix or host.endswith('.' + suffix) for suffix in VIDEO_PROXY_HOST_SUFFIXES)
+
+
+def proxied_video_url(value):
+    return app_url('/api/doramyclub/proxy?url=' + quote(value, safe=''))
+
+
+def rewrite_hls_manifest(content, source_url):
+    """Переписывает плейлисты, сегменты и ключи HLS на безопасный proxy endpoint."""
+    def wrap(value):
+        absolute = urljoin(source_url, value.strip())
+        return proxied_video_url(absolute) if is_allowed_video_url(absolute) else absolute
+
+    rewritten = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            rewritten.append(raw_line)
+            continue
+
+        if line.startswith('#'):
+            raw_line = re.sub(
+                r'URI=("|\')([^"\']+)(\1)',
+                lambda match: 'URI=' + match.group(1) + wrap(match.group(2)) + match.group(3),
+                raw_line,
+            )
+            rewritten.append(raw_line)
+        else:
+            rewritten.append(wrap(line))
+
+    return '\n'.join(rewritten) + ('\n' if content.endswith('\n') else '')
+
+
+def parse_range_start(value):
+    match = re.match(r'^bytes=(\d+)-', value or '')
+    return int(match.group(1)) if match else 0
+
+
+def fetch_allowed_video_url(value, headers, stream=True, max_redirects=4):
+    """Следует только по редиректам, которые также остаются в CDN allowlist."""
+    current_url = value
+    for _ in range(max_redirects + 1):
+        if not is_allowed_video_url(current_url):
+            raise ValueError('redirected video host not allowed')
+
+        response = requests.get(
+            current_url,
+            headers=headers,
+            timeout=(VIDEO_CONNECT_TIMEOUT, VIDEO_READ_TIMEOUT),
+            stream=stream,
+            allow_redirects=False,
+        )
+        if response.status_code not in {301, 302, 303, 307, 308}:
+            response.dorama_final_url = current_url
+            return response
+
+        location = response.headers.get('Location', '')
+        response.close()
+        if not location:
+            raise ValueError('video redirect without location')
+        current_url = urljoin(current_url, location)
+
+    raise ValueError('too many video redirects')
 
 # ====== DORAMCLUB.RU ======
 
@@ -497,6 +587,7 @@ def tmdb_search():
 
     # Собираем варианты для поиска (в порядке приоритета)
     queries = []
+    detail_year = ''
     if title:
         queries.append(title)  # исходное название (русское)
     if original_title and original_title not in queries:
@@ -518,25 +609,78 @@ def tmdb_search():
                 name = m.group(1).strip()
                 if name and name not in queries:
                     queries.append(name)
+            year_match = re.search(r'(?:Год выхода:|Год:)\s*</?[^>]*>?\s*(19\d{2}|20\d{2})', html)
+            if year_match:
+                detail_year = year_match.group(1)
         except Exception as e:
             logger.error('Detail fetch error for orig title: %s', e)
 
     if not queries:
         return jsonify({'id': None, 'error': 'no queries'})
 
-    # Пробуем каждый вариант, сначала TV, потом MOVIE
+    if not TMDB_API_KEY:
+        logger.error('TMDB_API_KEY is not configured')
+        return jsonify({'id': None, 'error': 'tmdb_not_configured'}), 503
+
+    expected_year = detail_year
+    if detail_url:
+        year_match = re.search(r'(19\d{2}|20\d{2})', detail_url)
+        if year_match:
+            expected_year = year_match.group(1)
+
+    def normalized(value):
+        return re.sub(r'[^a-zа-яё0-9]+', '', (value or '').lower())
+
+    def result_score(result, query, media_type):
+        names = [result.get('name'), result.get('title'), result.get('original_name'), result.get('original_title')]
+        query_norm = normalized(query)
+        score = 20 if media_type == 'tv' else 0
+        for name in names:
+            name_norm = normalized(name)
+            if query_norm and name_norm == query_norm:
+                score += 100
+            elif query_norm and (query_norm in name_norm or name_norm in query_norm):
+                score += 45
+
+        result_date = result.get('first_air_date') or result.get('release_date') or ''
+        if expected_year and result_date.startswith(expected_year):
+            score += 30
+        score += min(float(result.get('popularity') or 0), 100) / 20
+        return score
+
+    # Собираем кандидатов и выбираем по названию/типу/году, а не первый ответ TMDB.
+    candidates = []
     for q in queries:
         for media_type in ['tv', 'movie']:
             try:
                 url = f'https://api.themoviedb.org/3/search/{media_type}?api_key={TMDB_API_KEY}&query={quote(q)}&language=ru'
                 resp = SESSION.get(url, timeout=10)
+                resp.raise_for_status()
                 data = resp.json()
-                if data.get('results') and len(data['results']) > 0:
-                    r = data['results'][0]
-                    logger.info('TMDB found %s by [%s]: id=%d name=%s', media_type, q[:30], r['id'], r.get('name') or r.get('title', ''))
-                    return jsonify({'id': r['id'], 'title': r.get('name') or r.get('title', ''), 'type': media_type})
+                for result in (data.get('results') or [])[:10]:
+                    candidates.append((result_score(result, q, media_type), media_type, q, result))
             except Exception as e:
                 logger.error('TMDB %s search error for [%s]: %s', media_type, q[:30], e)
+
+    if candidates:
+        score, media_type, query_used, result = max(candidates, key=lambda item: item[0])
+        if score < 45:
+            logger.info('TMDB candidates rejected: best score=%.1f query=%s', score, query_used[:30])
+            return jsonify({'id': None, 'error': 'low_confidence', 'score': round(score, 1)})
+        logger.info(
+            'TMDB selected %s by [%s]: id=%s name=%s score=%.1f',
+            media_type,
+            query_used[:30],
+            result.get('id'),
+            result.get('name') or result.get('title', ''),
+            score,
+        )
+        return jsonify({
+            'id': result.get('id'),
+            'title': result.get('name') or result.get('title', ''),
+            'type': media_type,
+            'score': round(score, 1),
+        })
 
     return jsonify({'id': None, 'error': 'not found'})
 
@@ -830,7 +974,7 @@ def doramyclub_play():
 
 @app.route('/api/health')
 def health():
-    return jsonify({'status': 'ok', 'time': time.time()})
+    return jsonify({'status': 'ok', 'version': APP_VERSION, 'time': time.time()})
 
 
 @app.route('/plugin.js')
@@ -853,6 +997,7 @@ def serve_plugin():
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     resp.headers['Pragma'] = 'no-cache'
     resp.headers['Expires'] = '0'
+    resp.headers['X-Dorama-Version'] = APP_VERSION
     return resp
 
 
@@ -876,6 +1021,7 @@ def serve_online_plugin():
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     resp.headers['Pragma'] = 'no-cache'
     resp.headers['Expires'] = '0'
+    resp.headers['X-Dorama-Version'] = APP_VERSION
     return resp
 
 
@@ -885,45 +1031,102 @@ def doramyclub_proxy():
     if not video_url:
         return jsonify({'error': 'url required'}), 400
 
-    try:
+    if not is_allowed_video_url(video_url):
+        logger.warning('video proxy rejected host: %s', urlparse(video_url).hostname)
+        return jsonify({'error': 'video host not allowed'}), 403
+
+    request_id = uuid.uuid4().hex[:10]
+    range_header = request.headers.get('Range', '')
+    request_start = parse_range_start(range_header)
+    started_at = time.monotonic()
+
+    def open_upstream(range_value=''):
         headers = {
             'User-Agent': '',
             'Accept': '*/*',
+            'Accept-Encoding': 'identity',
         }
-        # Поддержка Range requests для перемотки
-        range_header = request.headers.get('Range')
-        if range_header:
-            headers['Range'] = range_header
+        if range_value:
+            headers['Range'] = range_value
+        return fetch_allowed_video_url(video_url, headers=headers, stream=True)
 
-        resp = SESSION.get(
-            video_url,
-            headers=headers,
-            timeout=60,
-            stream=True,
-        )
+    try:
+        resp = open_upstream(range_header)
         resp.raise_for_status()
 
+        content_type = (resp.headers.get('Content-Type') or 'application/octet-stream').lower()
+        is_manifest = 'mpegurl' in content_type or urlparse(video_url).path.lower().endswith('.m3u8')
+
+        if is_manifest:
+            manifest = resp.content.decode('utf-8', errors='replace')
+            resp.close()
+            rewritten = rewrite_hls_manifest(manifest, getattr(resp, 'dorama_final_url', video_url))
+            response = Response(rewritten, status=200, mimetype='application/vnd.apple.mpegurl')
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+            response.headers['X-Dorama-Request-Id'] = request_id
+            logger.info('video manifest id=%s host=%s bytes=%d', request_id, urlparse(video_url).hostname, len(rewritten))
+            return response
+
+        expected_length = int(resp.headers.get('Content-Length') or 0)
+
         def generate():
-            for chunk in resp.iter_content(chunk_size=262144):
-                if chunk:
-                    yield chunk
+            current = resp
+            sent = 0
+            retries = 0
+            try:
+                while True:
+                    try:
+                        for chunk in current.iter_content(chunk_size=512 * 1024):
+                            if chunk:
+                                sent += len(chunk)
+                                yield chunk
+                    except requests.RequestException as exc:
+                        logger.warning('video upstream interrupted id=%s sent=%d retry=%d error=%s', request_id, sent, retries, exc)
+                    finally:
+                        current.close()
+
+                    if not expected_length or sent >= expected_length or retries >= VIDEO_STREAM_RETRIES:
+                        break
+
+                    retries += 1
+                    resume_at = request_start + sent
+                    current = open_upstream(f'bytes={resume_at}-')
+                    current.raise_for_status()
+            finally:
+                try:
+                    current.close()
+                except Exception:
+                    pass
+                logger.info(
+                    'video complete id=%s host=%s sent=%d expected=%d retries=%d elapsed=%.1f',
+                    request_id,
+                    urlparse(video_url).hostname,
+                    sent,
+                    expected_length,
+                    retries,
+                    time.monotonic() - started_at,
+                )
 
         response = Response(
-            generate(),
+            stream_with_context(generate()),
             status=resp.status_code,
-            mimetype=resp.headers.get('Content-Type', 'application/octet-stream'),
+            content_type=resp.headers.get('Content-Type', 'application/octet-stream'),
+            direct_passthrough=True,
         )
         response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['X-Dorama-Request-Id'] = request_id
+        response.headers['Cache-Control'] = 'private, no-transform'
         if resp.headers.get('Content-Length'):
             response.headers['Content-Length'] = resp.headers.get('Content-Length')
         if resp.headers.get('Accept-Ranges'):
             response.headers['Accept-Ranges'] = resp.headers.get('Accept-Ranges')
-        if range_header and resp.headers.get('Content-Range'):
+        if resp.headers.get('Content-Range'):
             response.headers['Content-Range'] = resp.headers.get('Content-Range')
         return response
 
     except Exception as e:
-        logger.error('doramyclub proxy error: %s', e)
+        logger.error('doramyclub proxy error id=%s host=%s: %s', request_id, urlparse(video_url).hostname, e)
         return jsonify({'error': str(e)}), 502
 
 

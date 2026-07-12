@@ -10,6 +10,60 @@
 
   function log(m) { try { console.log('[Dorama] ' + m); } catch (e) {} }
 
+  function activateContent(root) {
+    try {
+      Lampa.Controller.collectionSet(root[0]);
+      Lampa.Controller.collectionFocus(false, root[0]);
+      Lampa.Controller.toggle('content');
+    } catch (e) { log('controller activation failed: ' + e.message); }
+  }
+
+  function loadOnlinePlugin(attempt) {
+    attempt = attempt || 0;
+    if (window.dorama_online_plugin || window.__dorama_online_loading) return;
+
+    window.__dorama_online_loading = true;
+    var script = document.createElement('script');
+    script.src = BASE_URL + '/online.js?v=2';
+    script.async = true;
+    script.onload = function () {
+      window.__dorama_online_loading = false;
+      log('online plugin loaded');
+    };
+    script.onerror = function () {
+      window.__dorama_online_loading = false;
+      if (attempt < 3) {
+        log('online plugin retry ' + (attempt + 1));
+        setTimeout(function () { loadOnlinePlugin(attempt + 1); }, 1000 * (attempt + 1));
+      } else {
+        log('online plugin load failed');
+      }
+    };
+    document.head.appendChild(script);
+  }
+
+  function openOnlineCard(card, attempt) {
+    attempt = attempt || 0;
+    if (!window.dorama_online_plugin) {
+      loadOnlinePlugin(0);
+      if (attempt < 20) {
+        if (attempt === 0) Lampa.Noty.show('Подготавливаю онлайн-плеер...');
+        setTimeout(function () { openOnlineCard(card, attempt + 1); }, 250);
+      } else {
+        Lampa.Noty.show('Не удалось загрузить онлайн-плеер');
+      }
+      return;
+    }
+
+    try { window.__dorama_online_card = card; } catch (e) {}
+    Lampa.Activity.push({
+      component: 'dorama_online',
+      title: card.title || 'Онлайн',
+      card: card,
+      params: { card: card },
+    });
+  }
+
   function escapeHtml(value) {
     return String(value || '').replace(/[&<>"']/g, function (s) {
       return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[s];
@@ -92,16 +146,6 @@
     var self = this;
     this.html = $('<div class="dorama-grid-root"></div>');
     this.cards = [];
-    this.keydown = function (event) {
-      var code = event.keyCode || event.which;
-      var key = event.key || '';
-      if (key !== 'Enter' && key !== 'OK' && code !== 13 && code !== 23 && code !== 66) return;
-      if (!self.html || !self.html.is(':visible') || !self.html.find('.dg-card').length) return;
-
-      event.preventDefault();
-      event.stopPropagation();
-      self.openFocusedCard();
-    };
 
     this.create = function () {
       self.renderLoading('Загружаю топы дорам...');
@@ -210,12 +254,6 @@
       });
     };
 
-    this.openFocusedCard = function () {
-      var focused = self.html.find('.dg-card.focus').eq(0);
-      if (!focused.length) focused = self.html.find('.dg-card.selector').eq(0);
-      if (focused.length) self.openCardElement(focused[0]);
-    };
-
     this.scrollToFocused = function () {
       var focused = self.html.find('.dg-card.focus').eq(0);
       if (!focused.length) return;
@@ -253,16 +291,12 @@
         up: function () { if (Navigator.canmove('up')) { Navigator.move('up'); self.afterMove(); } else Lampa.Controller.toggle('head'); },
         down: function () { Navigator.move('down'); self.afterMove(); },
         right: function () { Navigator.move('right'); self.afterMove(); },
-        enter: function () { self.openFocusedCard(); },
         back: function () { Lampa.Activity.backward(); }
       });
-      try { window.removeEventListener('keydown', self.keydown, true); } catch (e) {}
-      try { window.addEventListener('keydown', self.keydown, true); } catch (e) {}
       Lampa.Controller.toggle('content');
     };
 
     this.destroy = function () {
-      try { window.removeEventListener('keydown', self.keydown, true); } catch (e) {}
       this.html.remove();
     };
   });
@@ -316,13 +350,7 @@
       });
 
       self.html.off('hover:enter click', '.choice-online').on('hover:enter click', '.choice-online', function () {
-        try { window.__dorama_online_card = card; } catch (e) {}
-        Lampa.Activity.push({
-          component: 'dorama_online',
-          title: card.title || 'Онлайн',
-          card: card,
-          params: { card: card },
-        });
+        openOnlineCard(card);
       });
 
       // Устанавливаем фокус для навигации с пульта
@@ -394,24 +422,14 @@
     function openSearchFallback(query) {
       log('openSearchFallback: ' + query);
       try {
-        Lampa.Search.open({ query: query });
-
-        setTimeout(function () {
-          try {
-            var inputs = document.querySelectorAll('input');
-            for (var i = 0; i < inputs.length; i++) {
-              var inp = inputs[i];
-              if (inp.offsetParent !== null || inp.getBoundingClientRect) {
-                inp.value = query;
-                inp.focus();
-                inp.dispatchEvent(new Event('input', { bubbles: true }));
-                inp.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
-                inp.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }));
-              }
-            }
-          } catch (e) {}
-        }, 1200);
-      } catch (e) {}
+        Lampa.Search.open({
+          input: query,
+          onBack: function () { try { Lampa.Controller.toggle('content'); } catch (e) {} }
+        });
+      } catch (e) {
+        log('search open failed: ' + e.message);
+        try { Lampa.Controller.toggle('content'); } catch (ignore) {}
+      }
     }
 
     this.render = function (js) { return js ? this.html : $(this.html); };
@@ -431,47 +449,9 @@
         },
         down: function () { Navigator.move('down'); },
         right: function () { Navigator.move('right'); },
-        enter: function () {
-          // Находим сфокусированный элемент
-          var focused = self.html.find('.dg-card.focus').eq(0);
-          if (!focused.length) focused = self.html.find('.dg-card.selector').eq(0);
-          if (!focused.length) return;
-
-          var action = focused.attr('data-action');
-          log('enter on action: ' + action);
-
-          if (action === 'tmdb') {
-            if (self.currentCard && self.currentFallbackTitle !== undefined) {
-              self.searchTmdb(self.currentCard, self.currentFallbackTitle);
-            }
-          } else if (action === 'online') {
-            if (self.currentCard) {
-              try { window.__dorama_online_card = self.currentCard; } catch (e) {}
-              Lampa.Activity.push({
-                component: 'dorama_online',
-                title: self.currentCard.title || 'Онлайн',
-                card: self.currentCard,
-                params: { card: self.currentCard },
-              });
-            }
-          } else if (self.screenMode === 'choice') {
-            // Fallback: если data-action нет, но мы на экране выбора
-            var isOnline = focused.hasClass('choice-online');
-            if (isOnline && self.currentCard) {
-              try { window.__dorama_online_card = self.currentCard; } catch (e) {}
-              Lampa.Activity.push({
-                component: 'dorama_online',
-                title: self.currentCard.title || 'Онлайн',
-                card: self.currentCard,
-                params: { card: self.currentCard },
-              });
-            } else if (self.currentCard && self.currentFallbackTitle !== undefined) {
-              self.searchTmdb(self.currentCard, self.currentFallbackTitle);
-            }
-          }
-        },
         back: function () { Lampa.Activity.backward(); }
       });
+      activateContent(self.html);
     };
     this.destroy = function () { this.html.remove(); };
   });
@@ -515,19 +495,11 @@
     });
 
     log('plugin loaded');
+    loadOnlinePlugin(0);
   }
 
   if (window.appready) startPlugin();
   else Lampa.Listener.follow('app', function (e) { if (e.type === 'ready') startPlugin(); });
-
-  // Автозагрузка online-плагина для просмотра с DoramyClub.pro
-  try {
-    if (window.Lampa && Lampa.Utils && Lampa.Utils.putScript) {
-      Lampa.Utils.putScript([BASE_URL + '/online.js'], function () {}, false, function () {
-        log('online plugin auto-loaded');
-      }, true);
-    }
-  } catch (e) {}
 
   $('head').append('<style>' +
     '.dorama-grid-root,.dorama-detail-root{height:100%;overflow-y:auto;background:#101014;color:#fff}' +

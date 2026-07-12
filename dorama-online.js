@@ -9,6 +9,10 @@
 
   function log(m) { try { console.log('[DoramaOnline] ' + m); } catch (e) {} }
 
+  function proxyUrl(url) {
+    return url ? BASE_URL + '/api/doramyclub/proxy?url=' + encodeURIComponent(url) : '';
+  }
+
   function escapeHtml(value) {
     return String(value || '').replace(/[&<>"']/g, function (s) {
       return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[s];
@@ -49,6 +53,13 @@
     var sourceUrl = card.url || '';
     var playlistData = null;
     var selectedVoice = null;
+
+    this.refreshSelectors = function () {
+      try {
+        Lampa.Controller.collectionSet(self.html[0]);
+        Lampa.Controller.collectionFocus(false, self.html[0]);
+      } catch (e) { log('selector refresh failed: ' + e.message); }
+    };
 
     this.create = function () {
       self.html.html('<div class="dg-state"><div class="dg-spinner"></div><div>Загрузка плейлиста...</div></div>');
@@ -119,6 +130,7 @@
         selectedVoice = voiceList[index];
         self.renderEpisodes();
       });
+      self.refreshSelectors();
     };
 
     // Экран выбора эпизода
@@ -156,6 +168,7 @@
         var episode = playlistData.episodes[index];
         self.playEpisode(episode);
       });
+      self.refreshSelectors();
     };
 
     this.playEpisode = function (episode) {
@@ -192,20 +205,28 @@
     this.startPlayer = function (streamData, episode, studio) {
       var best = streamData.best_mp4;
 
-      if (!best || !best.url) {
+      if ((!best || !best.url) && !streamData.hls) {
         Lampa.Noty.show('Видео не найдено');
         return;
       }
 
-      // Используем proxy, т.к. CDN блокирует Chrome User-Agent плеера Lampa
-      var proxyUrl = BASE_URL + '/api/doramyclub/proxy?url=' + encodeURIComponent(best.url);
+      // HLS адаптируется к пропускной способности; MP4 остаётся резервом.
+      var primaryUrl = streamData.hls ? proxyUrl(streamData.hls) : proxyUrl(best.url);
+      var reserveUrl = streamData.hls && best && best.url ? proxyUrl(best.url) : '';
+      var reserveWasConfigured = !!reserveUrl;
+      var retryCount = 0;
 
       var element = {
         title: (card.title || card.name || playlistData.title || 'Дорама') + ' — S' + (episode.season || 1) + 'E' + (episode.episode || 1) + ' | ' + studio.name,
-        url: proxyUrl,
+        url: primaryUrl,
         timeline: {},
         isonline: true,
+        card: card,
+        hls_manifest_timeout: 20000,
+        hls_retry_timeout: 45000,
       };
+
+      if (reserveUrl) element.url_reserve = reserveUrl;
 
       // Качества тоже через proxy
       var q = {};
@@ -213,7 +234,7 @@
         var qualityOrder = ['1080p', '720p', '480p', '360p', '240p', '144p'];
         qualityOrder.forEach(function (quality) {
           if (streamData.qualities[quality]) {
-            q[quality] = BASE_URL + '/api/doramyclub/proxy?url=' + encodeURIComponent(streamData.qualities[quality]);
+            q[quality] = proxyUrl(streamData.qualities[quality]);
           }
         });
       }
@@ -221,7 +242,43 @@
         element.quality = q;
       }
 
-      log('play: ' + proxyUrl.substring(0, 100) + '...');
+      // Штатный recovery callback Lampa: обновляем подписанные CDN URL и
+      // сохраняем timeline, который плеер использует для возврата к позиции.
+      element.error = function (work, useReserve) {
+        if (reserveWasConfigured) {
+          reserveWasConfigured = false;
+          log('HLS failed, Lampa switched to MP4 reserve');
+          return;
+        }
+        if (retryCount >= 2) {
+          log('stream recovery limit reached');
+          return;
+        }
+        retryCount += 1;
+        log('refresh stream after player error, attempt ' + retryCount);
+
+        apiStream(studio.vk_id, function (fresh) {
+          var renewed = '';
+          if (work.quality_switched && fresh.qualities && fresh.qualities[work.quality_switched]) {
+            renewed = proxyUrl(fresh.qualities[work.quality_switched]);
+          } else if (fresh.hls) {
+            renewed = proxyUrl(fresh.hls);
+          } else if (fresh.best_mp4 && fresh.best_mp4.url) {
+            renewed = proxyUrl(fresh.best_mp4.url);
+          }
+
+          if (renewed) {
+            work.url = renewed;
+            useReserve(renewed);
+          } else {
+            Lampa.Noty.show('Не удалось восстановить видеопоток');
+          }
+        }, function () {
+          Lampa.Noty.show('Не удалось обновить ссылку на видео');
+        });
+      };
+
+      log('play: ' + primaryUrl.substring(0, 100) + '...');
 
       Lampa.Player.play(element);
     };
@@ -252,65 +309,6 @@
     this.destroy = function () { this.html.remove(); };
   });
 
-  // ====== Регистрация online-источника ======
-  function registerOnlineSource() {
-    // Добавляем в меню online-при просмотре фильма
-    // Это делается через перехват событий Lampa
-
-    // Альтернативно: добавляем кнопку в карточку дорамы из каталога
-    Lampa.Listener.follow('activity', function (event) {
-      if (event.type === 'start' && event.component === 'dorama_detail') {
-        // Добавляем кнопку "Смотреть онлайн" на страницу деталей
-        setTimeout(function () {
-          self.addOnlineButton(event.object);
-        }, 500);
-      }
-    });
-  }
-
-  // ====== Интеграция с dorama_detail ======
-  // Эта функция добавит кнопку в существующий компонент dorama_detail
-  function initOnlineButton() {
-    // Ждем загрузки плагина каталога
-    if (!Lampa.Components || !Lampa.Components.dorama_detail) {
-      setTimeout(initOnlineButton, 500);
-      return;
-    }
-
-    // Перехватываем создание dorama_detail
-    var originalCreate = Lampa.Components.dorama_detail.prototype.create;
-    Lampa.Components.dorama_detail.prototype.create = function () {
-      originalCreate.call(this);
-      addOnlineButtonToDetail(this);
-    };
-  }
-
-  function addOnlineButtonToDetail(component) {
-    var card = component.activity && component.activity.card ? component.activity.card : {};
-    if (!card.url || card.url.indexOf('doramyclub.pro') === -1) return;
-
-    var btnHtml = '<div class="selector" style="padding:1em;background:#ff9800;color:#fff;text-align:center;margin:1em;border-radius:.5em;cursor:pointer;">' +
-      '▶ Смотреть онлайн (DoramyClub)' +
-      '</div>';
-    var $btn = $(btnHtml);
-
-    $btn.on('hover:enter click', function () {
-      try { window.__dorama_online_card = card; } catch (e) {}
-      Lampa.Activity.push({
-        component: 'dorama_online',
-        title: card.title || 'Онлайн',
-        card: card,
-        params: { card: card },
-      });
-    });
-
-    // Вставляем кнопку в начало контента
-    var $root = component.html || $(component.html);
-    if ($root.length) {
-      $root.prepend($btn);
-    }
-  }
-
   // ====== Запуск ======
   function startPlugin() {
     if (window.dorama_online_plugin) return;
@@ -327,8 +325,6 @@
       },
     };
 
-    // Добавляем кнопку в детали
-    setTimeout(initOnlineButton, 1000);
   }
 
   if (window.appready) {
