@@ -1,0 +1,20 @@
+[Unit]
+Description=Dorama Proxy Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/dorama-proxy
+ExecStart=/root/dorama-proxy/start.sh
+EnvironmentFile=/root/dorama-proxy/.env
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+LimitNOFILE=65536
+StandardOutput=append:/root/dorama-proxy/server.log
+StandardError=append:/root/dorama-proxy/server.log
+
+[Install]
+WantedBy=multi-user.target

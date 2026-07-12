@@ -113,6 +113,8 @@ python3 server.py
 
 `start.sh` запускает приложение через Gunicorn на порту `5100` (по умолчанию 2 процесса × 8 потоков). Настройки можно переопределить переменными `DORAMA_PORT`, `DORAMA_WORKERS`, `DORAMA_THREADS`, `DORAMA_TIMEOUT`.
 
+Готовый unit находится в `deploy/dorama-proxy.service`; он запускает `start.sh`, сохраняет существующий `.env` и пишет stdout/stderr в `server.log`.
+
 Видеопрокси принимает только домены из `VIDEO_PROXY_HOST_SUFFIXES` (по умолчанию `okcdn.ru,mycdn.me,cdnvideohub.com`). Таймауты и число переподключений задаются через `VIDEO_CONNECT_TIMEOUT`, `VIDEO_READ_TIMEOUT`, `VIDEO_STREAM_RETRIES`.
 
 ## Проверка
