@@ -37,7 +37,7 @@ class JavaScriptContractTests(unittest.TestCase):
         self.assertIn('work.quality_switched', self.online)
 
     def test_online_module_cachebuster_matches_release(self):
-        self.assertIn("/online.js?v=2.0.2", self.catalog)
+        self.assertIn("/online.js?v=2.0.3", self.catalog)
 
 
 if __name__ == '__main__':

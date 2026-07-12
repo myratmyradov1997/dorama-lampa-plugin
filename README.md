@@ -115,7 +115,7 @@ python3 server.py
 
 Готовый unit находится в `deploy/dorama-proxy.service`; он запускает `start.sh`, сохраняет существующий `.env` и пишет stdout/stderr в `server.log`.
 
-Видеопрокси принимает только домены из `VIDEO_PROXY_HOST_SUFFIXES` (по умолчанию `okcdn.ru,mycdn.me,cdnvideohub.com`). Таймауты и число переподключений задаются через `VIDEO_CONNECT_TIMEOUT`, `VIDEO_READ_TIMEOUT`, `VIDEO_STREAM_RETRIES`.
+Видеопрокси принимает только домены из `VIDEO_PROXY_HOST_SUFFIXES` (по умолчанию `okcdn.ru,vkuser.net,mycdn.me,cdnvideohub.com`). Таймауты и число переподключений задаются через `VIDEO_CONNECT_TIMEOUT`, `VIDEO_READ_TIMEOUT`, `VIDEO_STREAM_RETRIES`.
 
 ## Проверка
 

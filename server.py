@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
-APP_VERSION = '2.0.2'
+APP_VERSION = '2.0.3'
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -40,7 +40,7 @@ VIDEO_PROXY_HOST_SUFFIXES = tuple(
     value.strip().lower().lstrip('.')
     for value in os.environ.get(
         'VIDEO_PROXY_HOST_SUFFIXES',
-        'okcdn.ru,mycdn.me,cdnvideohub.com',
+        'okcdn.ru,vkuser.net,mycdn.me,cdnvideohub.com',
     ).split(',')
     if value.strip()
 )

@@ -36,9 +36,11 @@ class VideoProxyTests(unittest.TestCase):
 
     def test_video_allowlist_rejects_ssrf_targets(self):
         self.assertTrue(server.is_allowed_video_url('https://vd478.okcdn.ru/video.mp4'))
+        self.assertTrue(server.is_allowed_video_url('https://ok6-3.vkuser.net/video.mp4'))
         self.assertTrue(server.is_allowed_video_url('https://cdn.mycdn.me/segment.ts'))
         self.assertFalse(server.is_allowed_video_url('http://127.0.0.1:8000/private'))
         self.assertFalse(server.is_allowed_video_url('https://okcdn.ru.evil.example/video.mp4'))
+        self.assertFalse(server.is_allowed_video_url('https://vkuser.net.evil.example/video.mp4'))
         self.assertFalse(server.is_allowed_video_url('file:///etc/passwd'))
 
     def test_hls_manifest_rewrites_relative_segments_and_keys(self):
