@@ -205,15 +205,14 @@
     this.startPlayer = function (streamData, episode, studio) {
       var best = streamData.best_mp4;
 
-      if ((!best || !best.url) && !streamData.hls) {
+      if (!best || !best.url) {
         Lampa.Noty.show('Видео не найдено');
         return;
       }
 
-      // HLS адаптируется к пропускной способности; MP4 остаётся резервом.
-      var primaryUrl = streamData.hls ? proxyUrl(streamData.hls) : proxyUrl(best.url);
-      var reserveUrl = streamData.hls && best && best.url ? proxyUrl(best.url) : '';
-      var reserveWasConfigured = !!reserveUrl;
+      // MP4 через backend proxy стабильно работает в TV WebView. HLS требует
+      // manifest XHR и на части телевизоров падает с manifestLoadError.
+      var primaryUrl = proxyUrl(best.url);
       var retryCount = 0;
 
       var element = {
@@ -225,8 +224,6 @@
         hls_manifest_timeout: 20000,
         hls_retry_timeout: 45000,
       };
-
-      if (reserveUrl) element.url_reserve = reserveUrl;
 
       // Качества тоже через proxy
       var q = {};
@@ -245,11 +242,6 @@
       // Штатный recovery callback Lampa: обновляем подписанные CDN URL и
       // сохраняем timeline, который плеер использует для возврата к позиции.
       element.error = function (work, useReserve) {
-        if (reserveWasConfigured) {
-          reserveWasConfigured = false;
-          log('HLS failed, Lampa switched to MP4 reserve');
-          return;
-        }
         if (retryCount >= 2) {
           log('stream recovery limit reached');
           return;
@@ -261,8 +253,6 @@
           var renewed = '';
           if (work.quality_switched && fresh.qualities && fresh.qualities[work.quality_switched]) {
             renewed = proxyUrl(fresh.qualities[work.quality_switched]);
-          } else if (fresh.hls) {
-            renewed = proxyUrl(fresh.hls);
           } else if (fresh.best_mp4 && fresh.best_mp4.url) {
             renewed = proxyUrl(fresh.best_mp4.url);
           }

@@ -24,7 +24,7 @@
 
     window.__dorama_online_loading = true;
     var script = document.createElement('script');
-    script.src = BASE_URL + '/online.js?v=2';
+    script.src = BASE_URL + '/online.js?v=2.0.2';
     script.async = true;
     script.onload = function () {
       window.__dorama_online_loading = false;

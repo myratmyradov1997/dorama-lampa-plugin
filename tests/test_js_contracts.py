@@ -29,10 +29,15 @@ class JavaScriptContractTests(unittest.TestCase):
         self.assertIn('window.dorama_online_plugin', self.catalog)
         self.assertIn('function openOnlineCard', self.catalog)
 
-    def test_player_prefers_hls_and_registers_recovery_callback(self):
-        self.assertIn('streamData.hls ? proxyUrl(streamData.hls)', self.online)
+    def test_player_prefers_mp4_and_registers_mp4_recovery_callback(self):
+        self.assertIn('var primaryUrl = proxyUrl(best.url)', self.online)
+        self.assertNotIn('streamData.hls ? proxyUrl(streamData.hls)', self.online)
+        self.assertNotIn('renewed = proxyUrl(fresh.hls)', self.online)
         self.assertIn('element.error = function', self.online)
         self.assertIn('work.quality_switched', self.online)
+
+    def test_online_module_cachebuster_matches_release(self):
+        self.assertIn("/online.js?v=2.0.2", self.catalog)
 
 
 if __name__ == '__main__':

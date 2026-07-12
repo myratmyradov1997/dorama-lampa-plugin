@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
-APP_VERSION = '2.0.1'
+APP_VERSION = '2.0.2'
 
 SESSION = requests.Session()
 SESSION.headers.update({
