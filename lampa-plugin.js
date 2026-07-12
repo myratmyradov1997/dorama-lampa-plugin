@@ -224,7 +224,7 @@
       html += '</div>';
       self.html.html(html);
 
-      self.html.off('hover:enter click', '.dg-card').on('hover:enter click', '.dg-card', function () {
+      self.html.find('.dg-card').off('hover:enter click').on('hover:enter click', function () {
         self.openCardElement(this);
       });
 
@@ -345,11 +345,11 @@
       self.html.html(html);
 
       // Обработчики для hover:enter (TV/пульт) и click (мышь)
-      self.html.off('hover:enter click', '.choice-tmdb').on('hover:enter click', '.choice-tmdb', function () {
+      self.html.find('.choice-tmdb').off('hover:enter click').on('hover:enter click', function () {
         self.searchTmdb(card, fallbackTitle);
       });
 
-      self.html.off('hover:enter click', '.choice-online').on('hover:enter click', '.choice-online', function () {
+      self.html.find('.choice-online').off('hover:enter click').on('hover:enter click', function () {
         openOnlineCard(card);
       });
 

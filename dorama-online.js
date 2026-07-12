@@ -125,7 +125,7 @@
       html += '</div></section></div>';
       self.html.html(html);
 
-      self.html.off('hover:enter click', '.voice-card').on('hover:enter click', '.voice-card', function () {
+      self.html.find('.voice-card').off('hover:enter click').on('hover:enter click', function () {
         var index = parseInt($(this).attr('data-index'), 10);
         selectedVoice = voiceList[index];
         self.renderEpisodes();
@@ -163,7 +163,7 @@
       html += '</div></section></div>';
       self.html.html(html);
 
-      self.html.off('hover:enter click', '.episode-card').on('hover:enter click', '.episode-card', function () {
+      self.html.find('.episode-card').off('hover:enter click').on('hover:enter click', function () {
         var index = parseInt($(this).attr('data-index'), 10);
         var episode = playlistData.episodes[index];
         self.playEpisode(episode);

@@ -21,6 +21,8 @@ class JavaScriptContractTests(unittest.TestCase):
         self.assertNotIn("addEventListener('keydown'", self.catalog)
         self.assertIn("Lampa.Controller.toggle('content')", self.catalog)
         self.assertIn(".on('hover:enter click'", self.catalog)
+        self.assertNotIn(".off('hover:enter click',", self.catalog)
+        self.assertNotIn(".off('hover:enter click',", self.online)
 
     def test_online_module_load_has_retry_and_readiness_gate(self):
         self.assertIn('function loadOnlinePlugin', self.catalog)
